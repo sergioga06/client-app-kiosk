@@ -6,12 +6,12 @@ export interface CartItem {
   productId: string;
   name: string;
   basePrice: number;
+  extraPrice: number;
   quantity: number;
-  customizations: {
-    added: string[];    // UUIDs de ingredientes extra
-    removed: string[];  // UUIDs de ingredientes quitados
+  customizations?: {
+    added: string[];
+    removed: string[];
   };
-  finalPrice: number;   // Precio base + extras
 }
 
 interface CartStore {
@@ -38,7 +38,12 @@ export const useCartStore = create<CartStore>((set, get) => ({
   
   // Calcular el total de la factura
   getTotal: () => {
-    const total = get().items.reduce((sum, item) => sum + (item.finalPrice * item.quantity), 0);
+    // 👇 EL CÁLCULO REPARADO: Suma el precio base más los extras
+    const total = get().items.reduce((sum, item) => {
+      const itemTotal = (item.basePrice + (item.extraPrice || 0)) * item.quantity;
+      return sum + itemTotal;
+    }, 0);
+    
     return parseFloat(total.toFixed(2));
   }
 }));

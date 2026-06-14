@@ -5,94 +5,159 @@ import apiClient from "@/lib/api-client"
 import { useCartStore } from "@/store/cart-store"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
-import { ShoppingCart, Plus, Minus, ChefHat, Trash2, CheckCircle2 } from "lucide-react"
+// 👇 1. Importamos DialogDescription para calmar la advertencia de Accesibilidad
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog"
+import { ShoppingCart, Plus, Minus, ChefHat, Trash2, CheckCircle2, Check } from "lucide-react"
 
 export default function KioskPage({ params }: { params: Promise<{ tableId: string }> }) {
   const [catalog, setCatalog] = useState<any[]>([])
+  const [categories, setCategories] = useState<any[]>([])
+  const [activeCategory, setActiveCategory] = useState<string>("all")
   
-  // Desenvolvemos la promesa con 'use()'
   const resolvedParams = use(params);
   const currentTableId = resolvedParams.tableId;
 
-  // ESTADOS DEL UI
   const [selectedProduct, setSelectedProduct] = useState<any | null>(null)
   const [quantity, setQuantity] = useState(1)
+  
+  const [selectedExtras, setSelectedExtras] = useState<any[]>([])
   const [removedIngredients, setRemovedIngredients] = useState<string[]>([])
-  const [wantsExtraCheese, setWantsExtraCheese] = useState(false)
-  const EXTRA_CHEESE_ID = "b3e7178a-a5c6-43b9-a1b7-b016d47b74f3";
 
-  // NUEVOS ESTADOS PARA EL CARRITO Y EL ENVÍO
   const [isCartOpen, setIsCartOpen] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [orderSuccess, setOrderSuccess] = useState(false)
 
-  const { items, addItem, removeItem, clearCart, getTotal } = useCartStore()
+  const { items, addItem, removeItem, clearCart } = useCartStore()
 
-  // --- SOLUCIÓN PARA EL NOMBRE DE LA MESA ---
   const getTableName = (rawId: string) => {
     if (!rawId) return "Barra";
-    // Limpiamos espacios y pasamos todo a minúsculas por si la URL varió
     const id = rawId.trim().toLowerCase(); 
-    
-    // Comprobamos si INCLUYE la primera parte del ID por máxima seguridad
     if (id.includes("06c06156")) return "Mesa 1";
-    
     return `Mesa (${id.substring(0, 4)})`;
   };
 
   useEffect(() => {
-    const fetchCatalog = async () => {
+    const fetchData = async () => {
       try {
-        const res = await apiClient.get('/gestion/productos')
-        const data = Array.isArray(res.data) ? res.data : res.data.data || []
-        setCatalog(data)
+        const [prodRes, catRes] = await Promise.all([
+          apiClient.get('/gestion/productos'),
+          apiClient.get('/gestion/categorias')
+        ]);
+        setCatalog(Array.isArray(prodRes.data) ? prodRes.data : prodRes.data.data || []);
+        setCategories(Array.isArray(catRes.data) ? catRes.data : catRes.data.data || []);
       } catch (error) {
-        console.error("Error al cargar productos:", error)
+        console.error("Error al cargar menú:", error)
       }
     }
-    fetchCatalog()
+    fetchData()
   }, [])
 
-  const toggleIngredient = (ingredientId: string) => {
-    if (removedIngredients.includes(ingredientId)) {
-      setRemovedIngredients(prev => prev.filter(id => id !== ingredientId))
-    } else {
-      setRemovedIngredients(prev => [...prev, ingredientId])
+  useEffect(() => {
+    if (selectedProduct) {
+      setQuantity(1);
+      setSelectedExtras([]);
+      setRemovedIngredients([]);
     }
+  }, [selectedProduct])
+
+  const filteredCatalog = activeCategory === "all" 
+    ? catalog 
+    : catalog.filter(product => product.categoryId === activeCategory);
+
+  const getFixedImageUrl = (url?: string) => {
+    if (!url) return "";
+    if (typeof window !== 'undefined') {
+      const currentIp = window.location.hostname;
+      return url.replace('localhost', currentIp);
+    }
+    return url;
+  };
+
+  const calculatedTotal = items.reduce((total, item) => {
+    const base = Number(item.basePrice) || 0;
+    const extra = Number(item.extraPrice) || 0;
+    const qty = Number(item.quantity) || 1;
+    return total + ((base + extra) * qty);
+  }, 0);
+
+  const toggleExtra = (extra: any) => {
+    setSelectedExtras(prev => 
+      prev.some(e => e.name === extra.name) 
+        ? prev.filter(e => e.name !== extra.name)
+        : [...prev, extra]
+    )
   }
+
+  const toggleRemoveIngredient = (ingName: string) => {
+    setRemovedIngredients(prev => 
+      prev.includes(ingName)
+        ? prev.filter(n => n !== ingName)
+        : [...prev, ingName]
+    )
+  }
+
+  const quickAddToCart = (product: any) => {
+    const existingItem = items.find(item => 
+      item.productId === product.id && 
+      (!item.customizations?.added || item.customizations.added.length === 0) &&
+      (!item.customizations?.removed || item.customizations.removed.length === 0)
+    );
+
+    if (existingItem) {
+      removeItem(existingItem.cartItemId);
+      addItem({ ...existingItem, quantity: existingItem.quantity + 1 });
+    } else {
+      addItem({
+        cartItemId: Math.random().toString(36).substring(7),
+        productId: product.id,
+        name: product.name,
+        basePrice: Number(product.price) || 0,
+        extraPrice: 0,
+        quantity: 1,
+        customizations: { added: [], removed: [] }
+      });
+    }
+  };
 
   const handleAddToCart = () => {
     if (!selectedProduct) return;
+    
+    const extraCost = selectedExtras.reduce((sum, e) => sum + Number(e.price), 0);
+    const addedExtrasNames = selectedExtras.map(e => e.name);
 
-    const extraCost = wantsExtraCheese ? 1.50 : 0;
-    const finalPrice = selectedProduct.price + extraCost;
+    const existingItem = items.find(item => 
+      item.productId === selectedProduct.id &&
+      JSON.stringify(item.customizations?.added || []) === JSON.stringify(addedExtrasNames) &&
+      JSON.stringify(item.customizations?.removed || []) === JSON.stringify(removedIngredients)
+    );
 
-    addItem({
-      cartItemId: Math.random().toString(36).substring(7),
-      productId: selectedProduct.id,
-      name: selectedProduct.name,
-      basePrice: selectedProduct.price,
-      quantity: quantity,
-      finalPrice: finalPrice,
-      customizations: {
-        added: wantsExtraCheese ? [EXTRA_CHEESE_ID] : [],
-        removed: removedIngredients
-      }
-    });
+    if (existingItem) {
+      removeItem(existingItem.cartItemId);
+      addItem({ ...existingItem, quantity: existingItem.quantity + quantity });
+    } else {
+      addItem({
+        cartItemId: Math.random().toString(36).substring(7),
+        productId: selectedProduct.id,
+        name: selectedProduct.name,
+        basePrice: Number(selectedProduct.price) || 0,
+        extraPrice: extraCost,
+        quantity: quantity,
+        customizations: {
+          added: addedExtrasNames,
+          removed: removedIngredients
+        }
+      });
+    }
 
-    setSelectedProduct(null);
-    setQuantity(1);
-    setRemovedIngredients([]);
-    setWantsExtraCheese(false);
+    // 👇 2. Retrasamos el cierre 50ms para evitar el error de "releasePointerCapture"
+    setTimeout(() => {
+      setSelectedProduct(null);
+    }, 50);
   }
 
-  // --- EL CEREBRO DE ENVIAR EL PEDIDO A LA COCINA ---
   const handleSubmitOrder = async () => {
     setIsSubmitting(true);
     try {
-      // 1. Construimos el JSON exactamente como te lo pide tu Gateway
       const orderPayload = {
         tableId: currentTableId,
         items: items.map(item => ({
@@ -102,20 +167,18 @@ export default function KioskPage({ params }: { params: Promise<{ tableId: strin
         }))
       };
 
-      // 2. Lo enviamos (como hacíamos en Postman)
       await apiClient.post('/gestion/pedidos', orderPayload);
-      
-      // 3. Magia UI: Vaciamos carrito y mostramos mensaje de éxito
       clearCart();
-      setIsCartOpen(false);
+      
+      // 👇 2. También aquí retrasamos el cierre 50ms
+      setTimeout(() => {
+        setIsCartOpen(false);
+      }, 50);
+      
       setOrderSuccess(true);
-      
-      // A los 3 segundos ocultamos el mensaje de éxito
       setTimeout(() => setOrderSuccess(false), 3000);
-      
     } catch (error) {
-      console.error("❌ Error enviando a cocina:", error);
-      alert("Hubo un problema al enviar el pedido. Llama al camarero.");
+      alert("Hubo un problema al enviar el pedido.");
     } finally {
       setIsSubmitting(false);
     }
@@ -123,20 +186,17 @@ export default function KioskPage({ params }: { params: Promise<{ tableId: strin
 
   return (
     <div className="min-h-screen bg-zinc-50 pb-32 relative">
-      {/* MENSAJE FLOTANTE DE ÉXITO */}
       {orderSuccess && (
         <div className="fixed top-20 left-4 right-4 z-50 animate-in slide-in-from-top-5 fade-in">
           <div className="bg-green-600 text-white p-4 rounded-2xl shadow-xl flex items-center justify-center gap-2 font-bold text-lg">
-            <CheckCircle2 />
-            ¡Pedido enviado a cocina!
+            <CheckCircle2 /> ¡Pedido enviado a cocina!
           </div>
         </div>
       )}
 
-      {/* CABECERA */}
       <header className="bg-white shadow-sm p-4 sticky top-0 z-10">
         <div className="max-w-4xl mx-auto flex justify-between items-center">
-          <div className="flex items-center gap-2 text-primary">
+          <div className="flex items-center gap-2 text-zinc-900">
             <ChefHat size={28} />
             <h1 className="text-xl font-black tracking-tight">Menú Digital</h1>
           </div>
@@ -144,159 +204,204 @@ export default function KioskPage({ params }: { params: Promise<{ tableId: strin
             {getTableName(currentTableId)}
           </div>
         </div>
+
+        <div className="max-w-4xl mx-auto mt-4 overflow-x-auto no-scrollbar pb-2">
+          <div className="flex gap-2 w-max">
+            <Button variant={activeCategory === "all" ? "default" : "outline"} className="rounded-full font-bold bg-zinc-900 text-white" onClick={() => setActiveCategory("all")}>Todos</Button>
+            {categories.map(cat => (
+              <Button key={cat.id} variant={activeCategory === cat.id ? "default" : "outline"} className={`rounded-full font-bold ${activeCategory === cat.id ? 'bg-zinc-900 text-white' : ''}`} onClick={() => setActiveCategory(cat.id)}>{cat.name}</Button>
+            ))}
+          </div>
+        </div>
       </header>
 
-      {/* CATÁLOGO */}
-      <main className="max-w-4xl mx-auto p-4 mt-4">
-        <h2 className="text-2xl font-bold mb-6">Nuestra Carta</h2>
-        
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          {catalog.map((product) => (
-            <Card 
-              key={product.id} 
-              className="p-4 flex gap-4 cursor-pointer hover:shadow-md transition active:scale-[0.98] border-zinc-200"
-              onClick={() => setSelectedProduct(product)}
-            >
-              <div className="w-24 h-24 bg-zinc-200 rounded-lg flex-shrink-0"></div>
-              
-              <div className="flex flex-col justify-between flex-1">
-                <div>
-                  <h3 className="font-bold text-lg leading-tight">{product.name}</h3>
-                  <p className="text-sm text-zinc-500 mt-1 line-clamp-2">
-                    {product.ingredients?.map((i:any) => i.name).join(', ') || 'Delicioso plato preparado al momento.'}
-                  </p>
+      <main className="max-w-4xl mx-auto p-4 mt-2">
+        {filteredCatalog.length === 0 ? (
+          <div className="text-center p-10 text-zinc-500 font-medium">Aún no hay productos en esta categoría.</div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {filteredCatalog.map((product) => (
+              <Card key={product.id} className="p-3 flex gap-4 cursor-pointer hover:shadow-md transition active:scale-[0.98] border-zinc-200" onClick={() => setSelectedProduct(product)}>
+                <div className="w-28 h-28 bg-zinc-100 rounded-lg flex-shrink-0 overflow-hidden border border-zinc-100">
+                  {product.image ? (
+                    <img src={getFixedImageUrl(product.image)} alt={product.name} className="w-full h-full object-cover" />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center text-zinc-300"><ChefHat size={32} /></div>
+                  )}
                 </div>
-                <div className="font-black text-lg mt-2">${product.price.toFixed(2)}</div>
-              </div>
-            </Card>
-          ))}
-        </div>
+                
+                <div className="flex flex-col justify-between flex-1 py-1">
+                  <div>
+                    <h3 className="font-bold text-lg leading-tight">{product.name}</h3>
+                    <p className="text-xs text-zinc-500 mt-1 line-clamp-2">{product.description}</p>
+                  </div>
+                  <div className="flex justify-between items-end mt-2">
+                    <div className="font-black text-xl text-zinc-900">${Number(product.price).toFixed(2)}</div>
+                    <button className="w-8 h-8 bg-zinc-900 text-white rounded-full flex items-center justify-center shadow-md active:scale-95 transition-transform" onClick={(e) => { e.stopPropagation(); quickAddToCart(product); }}><Plus size={20} /></button>
+                  </div>
+                </div>
+              </Card>
+            ))}
+          </div>
+        )}
       </main>
 
-      {/* BOTÓN FLOTANTE DEL CARRITO */}
       {items.length > 0 && !isCartOpen && (
         <div className="fixed bottom-0 left-0 w-full bg-white border-t border-zinc-200 p-4 shadow-[0_-10px_20px_rgba(0,0,0,0.05)] z-20 animate-in slide-in-from-bottom-5">
           <div className="max-w-4xl mx-auto flex justify-between items-center">
             <div className="flex flex-col">
               <span className="text-sm text-zinc-500 font-medium">{items.length} producto(s)</span>
-              <span className="text-2xl font-black">${getTotal().toFixed(2)}</span>
+              <span className="text-2xl font-black text-zinc-900">${calculatedTotal.toFixed(2)}</span>
             </div>
-            <Button size="lg" className="px-8 text-lg rounded-full font-bold shadow-md" onClick={() => setIsCartOpen(true)}>
-              <ShoppingCart className="mr-2" />
-              Ver Bandeja
+            <Button size="lg" className="px-8 text-lg rounded-full font-bold shadow-md bg-zinc-900 text-white" onClick={() => setIsCartOpen(true)}>
+              <ShoppingCart className="mr-2" /> Ver Bandeja
             </Button>
           </div>
         </div>
       )}
 
-      {/* MODAL DEL CARRITO DE LA COMPRA (Resumen antes de pagar) */}
+      {/* MODAL DEL CARRITO */}
       <Dialog open={isCartOpen} onOpenChange={setIsCartOpen}>
-        <DialogContent className="sm:max-w-[425px] rounded-xl h-[85vh] sm:h-auto flex flex-col">
-          <DialogHeader>
-            <DialogTitle className="text-2xl font-black">Tu Bandeja</DialogTitle>
-          </DialogHeader>
-
-          <div className="flex-1 overflow-y-auto py-4 space-y-4 pr-2">
+        <DialogContent className="sm:max-w-[425px] rounded-xl h-[85vh] sm:h-auto flex flex-col p-0 border-0 overflow-hidden">
+          <div className="p-6 pb-2">
+            <DialogHeader>
+              <DialogTitle className="text-2xl font-black text-zinc-900">Tu Bandeja</DialogTitle>
+              {/* 👇 1. Añadimos sr-only para que sea invisible visualmente pero el lector de pantallas lo lea */}
+              <DialogDescription className="sr-only">Revisa los productos antes de enviarlos a cocina</DialogDescription>
+            </DialogHeader>
+          </div>
+          <div className="flex-1 overflow-y-auto px-6 py-2 space-y-4">
             {items.map((item) => (
               <div key={item.cartItemId} className="flex justify-between items-start border-b border-zinc-100 pb-4">
                 <div className="flex-1">
-                  <div className="font-bold text-lg">
-                    <span className="text-primary mr-2">{item.quantity}x</span>
-                    {item.name}
+                  <div className="font-bold text-lg text-zinc-900">
+                    <span className="text-zinc-500 mr-2">{item.quantity}x</span>{item.name}
                   </div>
-                  <div className="text-sm text-zinc-500 mt-1">
-                    {item.customizations.added.length > 0 && <span className="text-green-600 block">+ Extra Queso</span>}
-                    {item.customizations.removed.length > 0 && <span className="text-red-500 line-through block">- Sin algún ingrediente</span>}
+                  <div className="text-sm mt-1">
+                    {item.customizations?.added?.map((extraName: string, i: number) => (
+                      <span key={i} className="text-emerald-600 font-medium block">+ Extra {extraName}</span>
+                    ))}
+                    {item.customizations?.removed?.map((ingName: string, i: number) => (
+                      <span key={i} className="text-rose-500 font-medium line-through block">- Sin {ingName}</span>
+                    ))}
                   </div>
-                  <div className="font-medium mt-1">${(item.finalPrice * item.quantity).toFixed(2)}</div>
+                  <div className="font-medium mt-1 text-zinc-900">${((Number(item.basePrice) * item.quantity) + Number(item.extraPrice)).toFixed(2)}</div>
                 </div>
-                <Button variant="ghost" size="icon" className="text-red-500 hover:text-red-700 hover:bg-red-50" onClick={() => removeItem(item.cartItemId)}>
-                  <Trash2 size={20} />
-                </Button>
+                <Button variant="ghost" size="icon" className="text-red-500 hover:bg-red-50" onClick={() => removeItem(item.cartItemId)}><Trash2 size={20} /></Button>
               </div>
             ))}
           </div>
-
-          <DialogFooter className="flex-col gap-3 sm:gap-0 pt-4 border-t mt-auto">
-            <div className="flex justify-between items-center w-full mb-4 px-2">
+          
+          <div className="p-6 bg-white border-t mt-auto">
+            <div className="flex justify-between items-center w-full mb-4">
               <span className="text-lg font-bold text-zinc-500">Total a pagar</span>
-              <span className="text-3xl font-black">${getTotal().toFixed(2)}</span>
+              <span className="text-3xl font-black text-zinc-900">${calculatedTotal.toFixed(2)}</span>
             </div>
-            <Button 
-              className="w-full text-xl h-16 rounded-2xl font-black shadow-lg" 
-              onClick={handleSubmitOrder}
-              disabled={isSubmitting}
-            >
-              {isSubmitting ? "Enviando a cocina..." : "Confirmar Pedido"}
+            <Button className="w-full text-xl h-16 rounded-2xl font-black shadow-lg bg-zinc-900 text-white" onClick={handleSubmitOrder} disabled={isSubmitting}>
+              {isSubmitting ? "Enviando..." : "Confirmar Pedido"}
             </Button>
-          </DialogFooter>
+          </div>
         </DialogContent>
       </Dialog>
 
-      {/* MODAL DE PERSONALIZACIÓN DE PRODUCTO (Se queda igual que ayer) */}
-      <Dialog open={!!selectedProduct} onOpenChange={() => setSelectedProduct(null)}>
-        <DialogContent className="sm:max-w-[425px] rounded-xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle className="text-2xl font-black">{selectedProduct?.name}</DialogTitle>
-          </DialogHeader>
-
-          <div className="py-4 space-y-6">
-            {selectedProduct?.ingredients && selectedProduct.ingredients.length > 0 && (
-              <div>
-                <h4 className="font-bold mb-3 uppercase text-xs text-zinc-500 tracking-wider">Ingredientes (Toca para quitar)</h4>
-                <div className="flex flex-wrap gap-2">
-                  {selectedProduct.ingredients.map((ing: any) => {
-                    const isRemoved = removedIngredients.includes(ing.id);
-                    return (
-                      <Badge 
-                        key={ing.id}
-                        variant={isRemoved ? "outline" : "default"}
-                        className={`cursor-pointer px-3 py-1 text-sm ${isRemoved ? 'line-through text-red-400 bg-red-50 border-red-200' : 'bg-zinc-800'}`}
-                        onClick={() => toggleIngredient(ing.id)}
-                      >
-                        {isRemoved ? `Sin ${ing.name}` : ing.name}
-                      </Badge>
-                    )
-                  })}
-                </div>
+      {/* MODAL DE PERSONALIZACIÓN DEL PRODUCTO */}
+      <Dialog open={!!selectedProduct} onOpenChange={() => {
+        // En caso de que se cierre clicando fuera, aplicamos también el retraso
+        setTimeout(() => setSelectedProduct(null), 50);
+      }}>
+        <DialogContent className="sm:max-w-[425px] rounded-xl max-h-[90vh] p-0 border-0 flex flex-col overflow-hidden bg-white">
+          
+          <div className="flex-1 overflow-y-auto">
+            {selectedProduct?.image ? (
+              <div className="w-full h-40 sm:h-48 bg-zinc-200 flex-shrink-0">
+                <img src={getFixedImageUrl(selectedProduct.image)} alt={selectedProduct.name} className="w-full h-full object-cover" />
               </div>
+            ) : (
+              <div className="w-full h-32 sm:h-40 bg-zinc-900 flex items-center justify-center text-white flex-shrink-0"><ChefHat size={48} /></div>
             )}
 
-            <div>
-              <h4 className="font-bold mb-3 uppercase text-xs text-zinc-500 tracking-wider">Añadir Extras</h4>
-              <div 
-                className={`flex items-center justify-between p-3 border rounded-lg cursor-pointer transition ${wantsExtraCheese ? 'border-green-500 bg-green-50' : 'border-zinc-200'}`}
-                onClick={() => setWantsExtraCheese(!wantsExtraCheese)}
-              >
-                <div>
-                  <p className="font-bold">Extra de Queso Cheddar</p>
-                  <p className="text-sm text-zinc-500">+ $1.50</p>
-                </div>
-                <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center ${wantsExtraCheese ? 'border-green-500 bg-green-500 text-white' : 'border-zinc-300'}`}>
-                  {wantsExtraCheese && <Plus size={16} />}
-                </div>
-              </div>
-            </div>
+            <div className="p-6">
+              <DialogHeader className="mb-4">
+                <DialogTitle className="text-2xl font-black text-zinc-900">{selectedProduct?.name}</DialogTitle>
+                {/* 👇 1. Cambiamos la etiqueta <p> por <DialogDescription> para cumplir con la Accesibilidad */}
+                <DialogDescription className="text-zinc-500 text-sm mt-2">
+                  {selectedProduct?.description || "Personaliza tu pedido a tu gusto"}
+                </DialogDescription>
+              </DialogHeader>
 
-            <div className="flex items-center justify-between pt-4 border-t">
-              <span className="font-bold">Cantidad</span>
-              <div className="flex items-center gap-4 bg-zinc-100 rounded-full p-1">
-                <Button variant="ghost" size="icon" className="rounded-full" onClick={() => setQuantity(Math.max(1, quantity - 1))}>
-                  <Minus size={18} />
-                </Button>
-                <span className="font-bold w-4 text-center">{quantity}</span>
-                <Button variant="ghost" size="icon" className="rounded-full" onClick={() => setQuantity(quantity + 1)}>
-                  <Plus size={18} />
-                </Button>
+              <div className="space-y-6 pb-2">
+                {selectedProduct?.ingredients?.length > 0 && (
+                  <div>
+                    <h4 className="font-bold mb-3 uppercase text-xs text-zinc-500 tracking-wider">Quitar Ingredientes</h4>
+                    <div className="space-y-2">
+                      {selectedProduct.ingredients.map((ing: any) => {
+                        const isRemoved = removedIngredients.includes(ing.name);
+                        return (
+                          <div 
+                            key={ing.id} 
+                            className={`flex items-center justify-between p-3 border rounded-lg cursor-pointer transition ${isRemoved ? 'border-rose-500 bg-rose-50' : 'border-zinc-200'}`}
+                            onClick={() => toggleRemoveIngredient(ing.name)}
+                          >
+                            <div className="flex items-center gap-2">
+                              <div className={`w-5 h-5 rounded border flex items-center justify-center ${isRemoved ? 'bg-rose-500 border-rose-500 text-white' : 'border-zinc-300 bg-white'}`}>
+                                {isRemoved && <Check size={14} />}
+                              </div>
+                              <p className={`font-bold ${isRemoved ? 'text-rose-700 line-through' : 'text-zinc-900'}`}>
+                                Sin {ing.name}
+                              </p>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {selectedProduct?.extras?.length > 0 && (
+                  <div>
+                    <h4 className="font-bold mb-3 uppercase text-xs text-zinc-500 tracking-wider">Añadir Extras</h4>
+                    <div className="space-y-2">
+                      {selectedProduct.extras.map((extra: any, idx: number) => {
+                        const isSelected = selectedExtras.some(e => e.name === extra.name);
+                        return (
+                          <div 
+                            key={idx} 
+                            className={`flex items-center justify-between p-3 border rounded-lg cursor-pointer transition ${isSelected ? 'border-emerald-600 bg-emerald-50' : 'border-zinc-200'}`}
+                            onClick={() => toggleExtra(extra)}
+                          >
+                            <div className="flex items-center gap-2">
+                              <div className={`w-5 h-5 rounded border flex items-center justify-center ${isSelected ? 'bg-emerald-600 border-emerald-600 text-white' : 'border-zinc-300 bg-white'}`}>
+                                {isSelected && <Check size={14} />}
+                              </div>
+                              <p className={`font-bold ${isSelected ? 'text-emerald-800' : 'text-zinc-900'}`}>
+                                {extra.name}
+                              </p>
+                            </div>
+                            <p className="text-sm font-black text-zinc-600">+{Number(extra.price).toFixed(2)}€</p>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex items-center justify-between pt-4 border-t">
+                  <span className="font-bold text-lg text-zinc-900">Cantidad</span>
+                  <div className="flex items-center gap-4 bg-zinc-100 rounded-full p-1">
+                    <Button variant="ghost" size="icon" className="rounded-full text-zinc-900" onClick={() => setQuantity(Math.max(1, quantity - 1))}><Minus size={18} /></Button>
+                    <span className="font-bold w-4 text-center text-lg text-zinc-900">{quantity}</span>
+                    <Button variant="ghost" size="icon" className="rounded-full text-zinc-900" onClick={() => setQuantity(quantity + 1)}><Plus size={18} /></Button>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
 
-          <DialogFooter>
-            <Button className="w-full text-lg h-14 rounded-xl font-bold" onClick={handleAddToCart}>
-              Añadir por ${( (selectedProduct?.price + (wantsExtraCheese ? 1.50 : 0)) * quantity ).toFixed(2)}
+          <div className="p-4 bg-white border-t shadow-[0_-10px_20px_rgba(0,0,0,0.05)] z-10 mt-auto">
+            <Button className="w-full text-xl h-14 rounded-xl font-black shadow-md bg-zinc-900 text-white" onClick={handleAddToCart}>
+              Añadir - ${( (Number(selectedProduct?.price) + selectedExtras.reduce((sum, e) => sum + Number(e.price), 0)) * quantity ).toFixed(2)}
             </Button>
-          </DialogFooter>
+          </div>
         </DialogContent>
       </Dialog>
     </div>
